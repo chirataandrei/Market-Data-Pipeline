@@ -1,0 +1,67 @@
+name: market-data-pipeline
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mdp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # no "ports:" on purpose -> 5432 is only reachable inside market_net
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./db/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    networks:
+      market_net:
+        ipv4_address: 172.28.0.10
+
+  ingestor:
+    build:
+      context: ./ingestor
+    container_name: mdp-ingestor
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: 172.28.0.10
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB}
+      # app user created by db/init/02_ingestor_user.sh; pg_hba.conf only
+      # allows this user, and only from 172.28.0.20
+      DB_USER: ingestor
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      SYMBOLS: ${SYMBOLS:-btcusdt,ethusdt,solusdt,bnbusdt,xrpusdt}
+      BATCH_SIZE: ${BATCH_SIZE:-500}
+      FLUSH_INTERVAL_SEC: ${FLUSH_INTERVAL_SEC:-2}
+      MAX_BUFFER: ${MAX_BUFFER:-50000}
+    networks:
+      market_net:
+        ipv4_address: 172.28.0.20
+
+networks:
+  market_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
+
+volumes:
+  pgdata:
